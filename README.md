@@ -31,4 +31,4 @@ Packet queue backlog → all legitimate traffic dropped
 Most home routers reboot, lock up, or enter bootloop within 10–60 seconds
 WiFi and wired clients lose connectivity completely
 
-Usage example:sudo python3 optimized_domination2.py -i wlan0 -t 800
+Usage example:sudo python3 optimized_domination.py -i wlan0 -t 800
